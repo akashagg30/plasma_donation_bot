@@ -124,3 +124,5 @@ STATIC_URL = '/static/'
 TELEGRAM_TOKEN = "1782672934:AAFx6yMwpxeSNPoKcIaAsSFl-VGnlL7XkQs"
 
 BOT_URL = "https://api.telegram.org/bot"+TELEGRAM_TOKEN
+
+DATE_INPUT_FORMATS = ('%d/%m/%y')

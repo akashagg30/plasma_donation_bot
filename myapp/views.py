@@ -1,4 +1,6 @@
+from django.db.models.fields import DateField, DateTimeField
 from django.db.models.query_utils import select_related_descend
+from django.views.generic.base import TemplateView
 from backend.settings import BOT_URL, TELEGRAM_TOKEN
 import json
 import os
@@ -6,8 +8,9 @@ import os
 import requests
 from django.http import JsonResponse, response
 from django.views import View
-from .models import Users, Donner
-from telegram_bot_calendar import DetailedTelegramCalendar, LSTEP
+from .models import Users, Donor
+from .utils import blood_groups
+import datetime
 
 class MainView(View):
     wrong_option = "please choose from the given options only, thanks"
@@ -16,24 +19,33 @@ class MainView(View):
         response = JsonResponse({"ok": "POST request processed"})
         
         t_data = json.loads(request.body)
-        
-        # if('callback_query' in t_data):
-        #     self.handleCalander(t_data['callback_query'])
-        #     return response
 
+        # print(t_data)
+        
         t_message = t_data["message"]
         self.t_chat_id = t_message["chat"]["id"]
         self.t_user = t_message['from']
 
+        if('username' not in self.t_user):
+            self.send_message('''please add your username and try again.
+            thanks!''')
+            return response
 
         try:
-            self.t_text = t_message["text"].strip()
+            if('text' in t_message):
+                self.t_text = t_message["text"].strip()
+            elif('location' in t_message):
+                self.t_text = t_message['location']
+            elif('contact' in t_message):
+                self.t_text = t_message['contact']
+            else:
+                return response
         except Exception as e:
             return response
 
         print('--------------------------------------------------------------------------------')
-        # print("message : ", t_message)
-        # print()
+        print("message : ", t_message)
+        print()
         print("text : ", self.t_text)
         print('--------------------------------------------------------------------------------')
 
@@ -51,12 +63,12 @@ class MainView(View):
             
             self.state = self.user.state
             print(self.state)
-            if((self.state==1 and self.t_text=='Donner') or (self.state < 21 and self.state!=1)):
-                self.handleDonner()
+            if((self.state==1 and self.t_text=='Donor') or (self.state < 21 and self.state!=1)):
+                self.handleDonor()
             elif((self.state==1 and self.t_text=='Beneficiary')):
                 self.handleBeneficiary()
             else:
-                self.send_message("Server Error")
+                self.send_message("Akash se pucho")
 
         return response
 
@@ -65,7 +77,7 @@ class MainView(View):
 
     def start_message(self):
         self.send_message("Hi! What are you?", {
-            'keyboard' : [[{'text' : 'Donner'}], [{'text': 'Beneficiary'}]],
+            'keyboard' : [[{'text' : 'Donor'}], [{'text': 'Beneficiary'}]],
             'one_time_keyboard' : True
         } )
 
@@ -82,11 +94,26 @@ class MainView(View):
 
 
 
-    def handleDonner(self):
+    def handleDonor(self):
+        
         def changeState(num):
             self.state = self.user.state = num
             self.user.save()
-            self.handleDonner()
+            self.handleDonor()
+
+        def askForAge():
+            self.send_message("Are you between the age of 18 and 55?", {
+                'keyboard' : [[{'text' : 'Yes'}], [{'text': 'No'}]],
+                'one_time_keyboard' : True
+            } )
+
+        def handleAge():
+            if(self.t_text == 'Yes'):
+                changeState(self.state + 1)
+            elif(self.t_text == 'No'):
+                changeState(endState)
+            else:
+                askForAge()
 
         def askGender():
             self.send_message("Please select gender", {
@@ -96,14 +123,15 @@ class MainView(View):
 
         def handleGender():
             if(self.t_text == 'Male' or self.t_text == 'Prefer not to say'):
-                changeState(6)
+                changeState(self.state + 2)
             elif(self.t_text == 'Female'):
-                changeState(5)
+                changeState(self.state + 1)
             else:
-                self.send_message(self.wrong_option)
+                if(self.t_text != 'Yes'):
+                    self.send_message(self.wrong_option)
                 askGender()
         
-        def checkPregnancy():
+        def askPregnancy():
             self.send_message("Have you ever been pregnant?", {
                 'keyboard' : [[{'text' : 'Yes'}], [{'text': 'No'}], [{'text': 'Prefer not to say'}]],
                 'one_time_keyboard' : True
@@ -111,71 +139,245 @@ class MainView(View):
 
         def handlePregnancy():
             if(self.t_text == 'No' or self.t_text == 'Prefer not to say'):
-                changeState(6)
+                changeState(self.state + 1)
             elif(self.t_text == 'Yes'):
-                changeState(0)
+                changeState(endState)
             else:
-                self.send_message(self.wrong_option)
-                askGender()
+                if(self.t_text != 'Female'):
+                    self.send_message(self.wrong_option)
+                askPregnancy()
 
-        if(self.state == 1):
+        def askPtvDate():
+            self.send_message("Please enter the date (in dd/mm/yy format) you tested corona positive")
+        
+        def handlePtvDate():
+            try:
+                temp = [int(x) for x in self.t_text.split('/')]
+                inputDate = datetime.date(2000+temp[2] , temp[1], temp[0])
+                today = datetime.date.today()
+
+                first_covid_case_date = datetime.date(2019, 12, 31)
+                
+                if(inputDate < first_covid_case_date or inputDate > today):
+                    self.send_message('please enter correct date')
+                elif((today-inputDate).days <= 90 and (today-inputDate).days >= 30):
+                    self.user.is_donor = True
+                    self.user.save()
+                    self.donor = Donor(users = self.user, corona_positive_since = inputDate)
+                    self.donor.save()
+                    changeState(self.state + 1)
+                else:
+                    changeState(endState)
+            except:
+                askPtvDate()
+
+        def askBloodGroup():
+            self.send_message("Please select your blood group", {
+                'keyboard' : [[x] for x in [dict({'text' : x}) for x in blood_groups]],
+                'one_time_keyboard' : True
+            } )
+
+        def handleBloodGroup():
+            if(self.t_text in blood_groups):  
+                self.donor.blood_group = self.t_text
+                self.donor.save()
+                changeState(self.state + 1)
+            else:
+                askBloodGroup()
+
+        def askIfDonated():
+            self.send_message("Have you donated plasma recently?", {
+                'keyboard' : [[{'text' : 'Yes'}], [{'text': 'No'}]],
+                'one_time_keyboard' : True
+            } )
+
+        def handleDonation():
+            if(self.t_text == 'Yes'):
+                changeState(self.state + 1)
+            elif(self.t_text == 'No'):
+                changeState(self.state + 2)
+            else:
+                askIfDonated()
+
+        def askDonationDate():
+            self.send_message("Please enter the date (in dd/mm/yy format) you donated plasma")
+
+        def handleDonationDate():
+            try:
+                temp = [int(x) for x in self.t_text.split('/')]
+                inputDate = datetime.date(2000+temp[2] , temp[1], temp[0])
+                today = datetime.date.today()
+
+                first_covid_case_date = datetime.date(2019, 12, 31)
+                
+                if(inputDate < first_covid_case_date or inputDate > today):
+                    self.send_message('please enter correct date')
+                else:
+                    self.donor.last_plasma_donation = inputDate
+                    self.donor.save()
+                    changeState(self.state + 1)
+            except:
+                askDonationDate()
+
+        def askIfVaccinated():
+            self.send_message("Have you got vacciated recently (in last 30 days)?", {
+                'keyboard' : [[{'text' : 'Yes'}], [{'text': 'No'}]],
+                'one_time_keyboard' : True
+            } )
+        
+        def handleVaccination():
+            if(self.t_text == 'Yes'):
+                changeState(self.state + 1)
+            elif(self.t_text == 'No'):
+                changeState(self.state + 2)
+            else:
+                askIfVaccinated()
+
+        def askVaccinationDate():
+            self.send_message("Please enter the date (in dd/mm/yy format) you got vaccinated")
+
+        def handleVaccinationDate():
+            try:
+                temp = [int(x) for x in self.t_text.split('/')]
+                inputDate = datetime.date(2000+temp[2] , temp[1], temp[0])
+                today = datetime.date.today()
+
+                first_covid_case_date = datetime.date(2019, 12, 31)
+                
+                if(inputDate < first_covid_case_date or inputDate > today):
+                    self.send_message('please enter correct date')
+                else:
+                    self.donor.vaccination = inputDate
+                    self.donor.save()
+                    changeState(self.state + 1)
+            except:
+                askVaccinationDate()
+
+        def askLocation():
+            self.send_message("Please share your location with us, this helps us to match you with best benificiaries", {
+                'keyboard' : [[{'text' : 'Send Location', 'request_location' : True}]],
+                'one_time_keyboard' : True
+            } )
+
+        def handleLocation():
+            try:
+                self.donor.longitude = self.t_text['longitude']
+                self.donor.latitude = self.t_text['latitude']
+                self.donor.save()
+                changeState(self.state + 1)
+            except:
+                askLocation()
+
+        def askIfSharePhoneNumber():
+            self.send_message("Do you allow the benificiary to call you?", {
+                'keyboard' : [[{'text' : 'Yes'}], [{'text': 'No'}]],
+                'one_time_keyboard' : True
+            } )
+
+        def handleIfSarePhoneNumber():
+            if(self.t_text == 'Yes'):
+                changeState(self.state + 1)
+            elif(self.t_text == 'No'):
+                changeState(self.state + 2)
+            else:
+                askIfSharePhoneNumber()
+
+        def askPhoneNumber():
+            self.send_message("Please share your Phone Number with us", {
+                'keyboard' : [[{'text' : 'Send PhoneNumber', 'request_contact' : True}]],
+                'one_time_keyboard' : True
+            } )
+
+        def handlePhoneNumber():
+            try:
+                self.donor.phone_number = self.t_text['phone_number']
+                self.donor.save()
+                changeState(16)
+            except:
+                askPhoneNumber()
+        
+        def handleEligibility():
+            today = datetime.date.today()
+
+            if((today- self.donor.corona_positive_since).days <=28):
+                self.user.can_donate = False
+                self.user.save()
+                self.send_message('not eligible yet')
+            elif(self.donor.vaccination_date != None and (today-self.donor.vaccination_date).days <= 28):
+                self.user.can_donate = False
+                self.user.save()
+                self.send_message('not eligible yet')
+            elif(self.donor.last_plasma_donation != None and (today-self.last_plasma_donation).days <= 28):
+                self.user.can_donate = False
+                self.user.save()
+                self.send_message('not eligible yet')
+            else:
+                self.user.can_donate = True
+                self.user.save()
+                self.send_message('''we have stored your information, and will share it with benificiaries.
+                Thanks for registering''')
+
+
+
+        # print
+        endState = 0
+
+        if(self.state > 7):
+            self.donor = self.user.donor
+
+        if(self.state == endState):
+            self.send_message('tumse na ho payega')
+
+        elif(self.state == 1):
             changeState(4)
 
         elif(self.state == 4):
-            if(self.t_text == 'Donner'):
-                askGender()
-            else:
-                handleGender()
+            handleAge()
 
         elif(self.state == 5):
-            if(self.t_text == 'Female'):
-                checkPregnancy()
-            else:
-                handlePregnancy()
+            handleGender()
 
-        # elif(self.state == 6):
-        #     calendar, step = DetailedTelegramCalendar().build()
-        #     self.send_message(f"Select {LSTEP[step]}", calendar)
+        elif(self.state == 6):
+            handlePregnancy()
 
-        else :
-            self.send_message("working on it")
+        elif(self.state == 7):
+            handlePtvDate()
 
+        elif(self.state == 8):
+            handleBloodGroup()
+
+        elif(self.state == 9):
+            handleDonation()
+
+        elif(self.state == 10):
+            handleDonationDate()
+
+        elif(self.state == 11):
+            handleVaccination()
+
+        elif(self.state == 12):
+            handleVaccinationDate()
+
+        elif(self.state == 13):
+            handleLocation()
+
+        elif(self.state == 14):
+            handleIfSarePhoneNumber()
+
+        elif(self.state == 15):
+            handlePhoneNumber()
+
+        elif(self.state == 16):
+            handleEligibility()
 
     
     def handleBeneficiary(self):
         self.send_message("hi beneficiary")
     
 
-    def handleCalander(self, c):
-        import pprint
-        pprint.PrettyPrinter(indent=4).pprint(c)
-        print(c)
-        result, key, step = DetailedTelegramCalendar().process(c['data'])
-        if not result and key:
-            self.edit_message_text(f"Select {LSTEP[step]}",
-                                c['message']['chat']['id'],
-                                c['message']['message_id'],
-                                reply_markup=key)
-        elif result:
-            self.edit_message_text(f"You selected {result}",
-                                c['message']['chat']['id'],
-                                c['message']['message_id'])
-
-
-    def edit_message_text(self, message, chat_id, message_id, reply_markup=''):
-        data = {
-            "chat_id": chat_id,
-            "text": message,
-            "message_id" : message_id,
-            "parse_mode": "Markdown",
-            'reply_markup': reply_markup
-        }
-        headers = {'Content-Type': 'application/json'}
-        response = requests.post(
-            f"{BOT_URL}/sendMessage", data=json.dumps(data), headers=headers
-        )
 
     def send_message(self, message, markup = ""):
+        print(markup)
         data = {
             "chat_id": self.t_chat_id,
             "text": message,
