@@ -20,9 +20,12 @@ class MainView(View):
 
         # print(t_data)
         
-        t_message = t_data["message"]
-        self.t_chat_id = t_message["chat"]["id"]
-        self.t_user = t_message['from']
+        try:
+            t_message = t_data["message"]
+            self.t_chat_id = t_message["chat"]["id"]
+            self.t_user = t_message['from']
+        except:
+            return response
 
         if('username' not in self.t_user):
             self.send_message('''please add your username and try again.
@@ -49,6 +52,12 @@ class MainView(View):
 
         if(self.t_text == '/start'):
             self.isUserExists()
+            self.user.state = 1
+            self.user.save()
+            self.start_message()
+            return response
+
+        elif(self.t_text == '/restart'):
             self.user.state = 1
             self.user.save()
             self.start_message()
@@ -328,7 +337,7 @@ class MainView(View):
             self.donor = self.user.donor
 
         if(self.state == endState):
-            self.send_message('tumse na ho payega')
+            self.send_message('Sorry, you are not eligible')
 
         elif(self.state == 1):
             changeState(4)
@@ -427,7 +436,7 @@ class MainView(View):
                 self.send_message(msg)
 
             if len(donorList) == 0:
-                self.send_message('Sorry! No donnor available\nplease try after sometime')
+                self.send_message('Sorry! No donor available\nplease try after sometime')
 
         def handleDonorList():
             days28 = datetime.date.today() - datetime.timedelta(days=28)
