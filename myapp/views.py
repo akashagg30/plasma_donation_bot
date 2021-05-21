@@ -1,19 +1,17 @@
-from django.db.models.fields import DateField, DateTimeField
-from django.db.models.query_utils import select_related_descend
-from django.views.generic.base import TemplateView
+from collections import UserList
 from backend.settings import BOT_URL, TELEGRAM_TOKEN
 import json
-import os
-
 import requests
-from django.http import JsonResponse, response
+from django.http import JsonResponse
 from django.views import View
-from .models import Users, Donor
-from .utils import blood_groups
+from django.db.models import Q
+from .models import Users, Donor, Beneficiary
+from .utils import blood_groups, blood_group_match
 import datetime
 
 class MainView(View):
     wrong_option = "please choose from the given options only, thanks"
+    beneficiaryState = 17
 
     def post(self, request, *args, **kwargs):
         response = JsonResponse({"ok": "POST request processed"})
@@ -63,9 +61,9 @@ class MainView(View):
             
             self.state = self.user.state
             print(self.state)
-            if((self.state==1 and self.t_text=='Donor') or (self.state < 21 and self.state!=1)):
+            if((self.state==1 and self.t_text=='Donor') or (self.state < self.beneficiaryState and self.state!=1)):
                 self.handleDonor()
-            elif((self.state==1 and self.t_text=='Beneficiary')):
+            elif((self.state==1 and self.t_text=='Beneficiary') or (self.state >= self.beneficiaryState)):
                 self.handleBeneficiary()
             else:
                 self.send_message("Akash se pucho")
@@ -195,6 +193,8 @@ class MainView(View):
             if(self.t_text == 'Yes'):
                 changeState(self.state + 1)
             elif(self.t_text == 'No'):
+                self.donor.last_plasma_donation = None
+                self.donor.save()
                 changeState(self.state + 2)
             else:
                 askIfDonated()
@@ -221,14 +221,16 @@ class MainView(View):
 
         def askIfVaccinated():
             self.send_message("Have you got vacciated recently (in last 30 days)?", {
-                'keyboard' : [[{'text' : 'Yes'}], [{'text': 'No'}]],
+                'keyboard' : [[{'text' : 'yes'}], [{'text': 'no'}]],
                 'one_time_keyboard' : True
             } )
         
         def handleVaccination():
-            if(self.t_text == 'Yes'):
+            if(self.t_text == 'yes'):
                 changeState(self.state + 1)
-            elif(self.t_text == 'No'):
+            elif(self.t_text == 'no'):
+                self.donor.vaccination_date = None
+                self.donor.save()
                 changeState(self.state + 2)
             else:
                 askIfVaccinated()
@@ -269,7 +271,7 @@ class MainView(View):
                 askLocation()
 
         def askIfSharePhoneNumber():
-            self.send_message("Do you allow the benificiary to call you?", {
+            self.send_message("Do you allow the beneficiary to call you?", {
                 'keyboard' : [[{'text' : 'Yes'}], [{'text': 'No'}]],
                 'one_time_keyboard' : True
             } )
@@ -371,13 +373,98 @@ class MainView(View):
             handleEligibility()
 
     
+
+
+
     def handleBeneficiary(self):
-        self.send_message("hi beneficiary")
+        
+        def changeState(num):
+            self.state = self.user.state = num
+            self.user.save()
+            self.handleBeneficiary()
+
+        def askBloodGroup():
+            self.send_message("Please select blood group you need plasma of", {
+                'keyboard' : [[x] for x in [dict({'text' : x}) for x in blood_groups]],
+                'one_time_keyboard' : True
+            } )
+
+        def handleBloodGroup():
+            if(self.t_text in blood_groups):
+                self.user.is_beneficiary = True
+                self.user.save()
+                self.beneficiary = Beneficiary(users = self.user, blood_group = self.t_text)
+                self.beneficiary.save() 
+                changeState(self.state + 1)
+            else:
+                askBloodGroup()
+
+        def askLocation():
+            self.send_message("Please share your location with us, this helps us to match you with best donors", {
+                'keyboard' : [[{'text' : 'Send Location', 'request_location' : True}]],
+                'one_time_keyboard' : True
+            } )
+
+        def handleLocation():
+            try:
+                self.beneficiary.longitude = self.t_text['longitude']
+                self.beneficiary.latitude = self.t_text['latitude']
+                self.beneficiary.save()
+                changeState(self.state + 1)
+            except:
+                askLocation()
+
+        def showDonors(donorList):
+            for donor in donorList:
+                donor.shown_time = datetime.datetime.now()
+                donor.save()
+                donor = donor.users
+
+                msg = 'Donor Name : '+donor.name+'\n'
+                msg += 'Donor user name : @'+donor.user_name+'\n'
+                if donor.phone_number is not None:
+                    msg += 'Donor phone number : @'+donor.phone_number+'\n'
+                self.send_message(msg)
+
+            if len(donorList) == 0:
+                self.send_message('Sorry! No donnor available\nplease try after sometime')
+
+        def handleDonorList():
+            days28 = datetime.date.today() - datetime.timedelta(days=28)
+            days120 = datetime.date.today() - datetime.timedelta(days=120)
+            mins5 = datetime.datetime.now() - datetime.timedelta(minutes=1)
+            userList =  Donor.objects.filter(blood_group__in = blood_group_match[self.beneficiary.blood_group])  \
+                        .filter(corona_positive_since__lt = days28, corona_positive_since__gte = days120)   \
+                        .filter(Q(vaccination_date__isnull = True) | Q(vaccination_date__lt = days28) ) \
+                        .filter(Q(last_plasma_donation__isnull = True) | Q(last_plasma_donation__lt = days28) ) \
+                        .filter(Q(shown_time__isnull = True) | Q(shown_time__lte = mins5))
+                        
+            showDonors(userList)
+
+
+
+        if(self.state > self.beneficiaryState):
+            self.beneficiary = self.user.beneficiary
+
+        if(self.state == 1):
+            changeState(self.beneficiaryState)
+
+        elif(self.state == self.beneficiaryState):
+            handleBloodGroup()
+
+        elif(self.state == self.beneficiaryState+1):
+            handleLocation()
+
+        elif(self.state == self.beneficiaryState+2):
+            handleDonorList()
+
+        else:
+            self.send_message("karye pragati pr hai")
+
     
 
 
     def send_message(self, message, markup = ""):
-        print(markup)
         data = {
             "chat_id": self.t_chat_id,
             "text": message,

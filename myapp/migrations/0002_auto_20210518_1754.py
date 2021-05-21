@@ -28,7 +28,7 @@ class Migration(migrations.Migration):
         ),
         migrations.AddField(
             model_name='users',
-            name='is_benificiary',
+            name='is_beneficiary',
             field=models.BooleanField(default=False),
         ),
         migrations.AddField(
